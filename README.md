@@ -73,7 +73,19 @@ Health, the trusted catalog, and the real harness-composed surface:
 curl http://127.0.0.1:8113/healthz
 curl http://127.0.0.1:8113/v1/catalog
 open  http://127.0.0.1:8113/s/harness      # the render client, which executes nothing
+open  http://127.0.0.1:8113/app            # generic UI-only app loop
+open  http://127.0.0.1:8113/app/trip       # Trip Planner (every turn is a composed interface)
 ```
+
+## Trip Planner (UI-only application)
+
+`GET /app/trip` forks the bare `/app` shell for a multi-turn trip planner. Synthetic
+identities only (`tenant_id=course`, `project_id=s14-trip`, `user_id=traveler-01`).
+Each turn posts `respond_as:"ui"`, reads `/v1/runs/{id}/composed`, and renders the
+validated surface. A button tap becomes the next turn. The catalog includes a custom
+`CodeDiff` and `Map` components so itinerary revisions and place markers can
+render as before/after plain-text plans and an SVG marker map — drawn with text
+nodes only, never `innerHTML` from bound values.
 
 ## Run a prompt
 
@@ -111,13 +123,15 @@ All served by the runtime on 8113, defined in
 | `GET /v1/catalog` | the trusted component catalog |
 | `GET /v1/runs/{id}/surface` | a validated declarative surface built from the in-process graph |
 | `GET /v1/runs/{id}/dashboard` | the rich showcase dashboard, validated |
+| `GET /v1/runs/{id}/composed` | the `compose_surface` result for a UI-mode run |
 | `GET /v1/runs/{id}/events` | the S13 journal mapped to AG-UI events over SSE |
 | `GET /v1/harness/surface` | the real surface a recorded S13 harness run composed (re-validated on serve) |
 | `POST /v1/validate` | run any surface through the injection wall |
 | `POST /v1/action` | a validated user action (approve/reject), bound to final params |
 | `GET /s/{id}` | the render client, pointed at a run |
-| `GET /app` | the bare-minimal UI-only app shell |
-| `GET /jobhunt` | **Career Pipeline**, the UI-only application (see below) |
+| `GET /app` | bare-minimal UI-only conversation shell |
+| `GET /app/trip` | Trip Planner shell (destination → days+map → revision with CodeDiff) |
+| `GET /jobhunt` | Career Pipeline shell with KanbanBoard and adversarial proof flow |
 
 ## The generative loop (UI composed by the harness)
 
@@ -138,69 +152,6 @@ S14_SELFCORRECT_CITY=Berlin GLC_BASE_URL=http://127.0.0.1:8111 \
   uv run python proofs/harness_selfcorrect.py  # -> proofs/harness_selfcorrect.json
 ```
 
-## The `KanbanBoard` component
-
-The catalog carries **24** component types: 15 A2UI Basic + 9 custom extensions.
-The ninth custom type is `KanbanBoard`
-([`s13code/ui/catalog.py`](s13code/ui/catalog.py)) — lanes of cards, for anything
-that sits in a named stage and moves between stages.
-
-```python
-"KanbanBoard": ComponentSpec("KanbanBoard", {
-    "title":       PropSpec("text"),      # a literal lane-board caption
-    "columns":     PropSpec("binding"),   # -> [{"title", "cards":[{"title","meta","tone"}]}]
-    "onCardPress": PropSpec("action"),    # a REGISTERED action, or the card is inert
-    "wipLimit":    PropSpec("number"),    # colours a lane header; executes nothing
-}, source="custom"),
-```
-
-The renderers in [`client/index.html`](s13code/ui/client/index.html),
-[`client/app.html`](s13code/ui/client/app.html) and
-[`client/jobhunt.html`](s13code/ui/client/jobhunt.html) draw every lane title,
-card title and card meta with `createTextNode`, so a card titled
-`<img src=x onerror=...>` renders those literal characters. A card becomes
-tappable **only** when `onCardPress` names an action the catalog registered, so
-the event invariant holds at render time as well as at validation time.
-
-Nothing in the compose prompt names `KanbanBoard`. The content role may emit a
-generic `board` field, `compose_surface` exposes it as one pointer
-(`/board_columns`), and the model picks the component out of the catalog on its
-own.
-
-## Career Pipeline — the UI-only application
-
-A job-hunt tracker that answers **only** by composing an interface, served at
-`/jobhunt`. Every turn is a composed, catalog-validated surface; a tap on a card
-is what earns the next turn.
-
-| Turn | What the user does | What the agent composes |
-|---|---|---|
-| 1 | asks about the job hunt | `KanbanBoard` of applications by stage, `StatTile` totals |
-| 2 | **taps a company card** | that application's detail: `StatTile` row + `Card`/`List` history |
-| 3 | asks to compare offers | `DataTable` of compensation across options |
-
-The shell holds no templates and no domain logic. It shows the validator's own
-refusals inline, so a hostile turn is visible rather than silent.
-
-### Hosting it
-
-[`modal_app.py`](modal_app.py) deploys the application as **one container with
-two processes**: the gateway on `127.0.0.1:8111`, never published, and S14Code
-as the public ASGI app. The provider key comes from a Modal Secret, is handed to
-the gateway subprocess, and is then deleted from the app process's environment —
-so the UI layer holds no credential at runtime, exactly as it does locally. The
-container has no Ollama, so the runtime uses the offline `DeterministicEmbedder`
-via `S13_EMBEDDER=deterministic`; that changes memory recall quality only, and
-every model completion still goes through the gateway to Gemini.
-
-```bash
-modal secret create s14-gemini GEMINI_API_KEY=<your key>
-GLC_PACKAGE_DIR=/path/to/glc_v3/glc modal deploy modal_app.py
-```
-
-The gateway package is a separate project and is deliberately **not** vendored
-into this repository; point `GLC_PACKAGE_DIR` at your checkout.
-
 ## Proofs and tests
 
 Everything the Session 14 widgets replay is real captured output under `proofs/`:
@@ -210,35 +161,17 @@ Everything the Session 14 widgets replay is real captured output under `proofs/`
 | `proof.json` | `run_surface_proof.py` | injection wall (4 rejections), HITL, catalog/validator |
 | `harness_run.json` | `harness_run.py` | a real live-graph run → the model composes a 19-component surface |
 | `harness_selfcorrect.json` | `harness_selfcorrect.py` | the planner catches weak Berlin evidence and re-researches |
+| `harness_codediff.json` | `harness_codediff.py` | live compose includes `CodeDiff` without naming it in the user prompt |
+| `adversarial_trip.json` | `adversarial_trip.py` | RawHtml / markup / unregistered action refused; safe heading survives |
 | `generated_surface.json` | `generate_live.py` | a local model's output caught by the validator |
 | `gemini_surface.json` | `generate_gemini.py` | Gemini's raw output via the gateway |
-| `jobhunt_conversation.json` | `jobhunt_conversation.py` | 3 turns of Career Pipeline, 3 different interfaces |
-| `adversarial_jobhunt.json` | `adversarial_jobhunt.py` | the hostile prompt, and the wall refusing it |
-| `browser_demo.json` + `screens/` | `browser_demo.py` | the app driven in a real browser, screenshot per turn |
-
-Reproduce the Session 14 application proofs from a fresh checkout (gateway on
-8111 with `provider=gemini`, runtime on 8113):
-
-```bash
-uv sync
-GLC_BASE_URL=http://127.0.0.1:8111 S13_GATEWAY_PROVIDER=gemini \
-  S14_SURFACE_MAX_TOKENS=12000 uv run s14code serve &
-
-export S14_BASE=http://127.0.0.1:8113
-uv run python proofs/jobhunt_conversation.py    # 3 turns, 3 interfaces
-uv run python proofs/adversarial_jobhunt.py     # the injection wall under attack
-
-# the browser demo needs one extra dependency and a headless Chromium
-uv sync --group demo && uv run playwright install chromium
-uv run python proofs/browser_demo.py            # -> proofs/screens/*.png
-```
-
-`S14_SURFACE_MAX_TOKENS` matters: at the 4000 default, Gemini 2.5 Flash
-occasionally stops mid-JSON and the turn composes nothing. 12000 removed the
-failure in repeated runs.
 
 ```bash
 uv run python proofs/run_surface_proof.py    # writes proof.json, prints the table
+uv run python proofs/adversarial_trip.py     # three invariants against a hostile surface
+# gateway on 8111 required:
+S13_GATEWAY_PROVIDER=gemini GLC_BASE_URL=http://127.0.0.1:8111 \
+  uv run python proofs/harness_codediff.py   # -> proofs/harness_codediff.json
 uv run pytest -q                             # S13 core + regression tests + the S14 invariant tests
 ```
 

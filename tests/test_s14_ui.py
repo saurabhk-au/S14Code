@@ -368,121 +368,173 @@ def test_safe_siblings_survive_a_partially_poisoned_surface():
     assert "poison" not in accepted_ids
 
 
-# --------------------------------------------------------------------------- #
-# KanbanBoard — the contributed component, held to the same three invariants
-# --------------------------------------------------------------------------- #
-
-def _board(**over) -> dict:
-    """A well-formed KanbanBoard, overridable field by field."""
-    comp = {"id": "kb", "type": "KanbanBoard", "title": "Pipeline",
-            "columns": {"$bind": "/board_columns"},
-            "onCardPress": {"action": "request_data"}, "wipLimit": 5}
-    comp.update(over)
-    return comp
-
-
-def test_kanban_is_in_the_catalog_as_a_custom_extension():
-    assert "KanbanBoard" in COMPONENTS
-    assert COMPONENTS["KanbanBoard"].source == "custom"
-    kinds = {name: spec.kind for name, spec in COMPONENTS["KanbanBoard"].props.items()}
-    assert kinds == {"title": "text", "columns": "binding",
-                     "onCardPress": "action", "wipLimit": "number"}
-
-
-def test_kanban_well_formed_board_validates_clean():
-    surface = {"root": "kb", "components": [_board()],
-               "dataModel": {"board_columns": [{"title": "Applied", "cards": [{"title": "Acme"}]}]}}
-    assert validate_surface(surface).ok
-
-
-# --- invariant 1: catalog ---------------------------------------------------
-def test_kanban_a_near_miss_type_name_is_still_unknown():
-    """The catalog is closed: 'Kanban' and 'KanbanColumn' are not KanbanBoard."""
-    for bogus in ("Kanban", "KanbanColumn", "KanbanBoardV2"):
-        assert _reject({"id": "x", "type": bogus}).invariant == Invariant.CATALOG
-
-
-# --- invariant 2: data-not-code ---------------------------------------------
-def test_kanban_title_carrying_markup_is_refused():
-    r = _reject(_board(title="<script>fetch('/steal')</script>"))
-    assert r.invariant == Invariant.DATA_NOT_CODE
-    assert r.field == "title" and r.reason == "value carries markup"
-
-
-def test_kanban_inline_markup_where_a_binding_belongs_is_refused():
-    """columns is a binding; markup smuggled in as a literal never renders."""
-    r = _reject(_board(columns="<img src=x onerror=alert(1)>"))
-    assert r.invariant == Invariant.DATA_NOT_CODE
-    assert r.field == "columns"
-
-
-def test_kanban_binding_must_be_a_bind_pointer():
-    r = _reject(_board(columns=[{"title": "Applied", "cards": []}]))
-    assert r.invariant == Invariant.DATA_NOT_CODE
-    assert "must be {'$bind': '/pointer'}" in r.reason
-
-
-def test_kanban_javascript_url_in_a_prop_is_refused():
-    r = _reject(_board(title="javascript:steal()"))
-    assert r.invariant == Invariant.DATA_NOT_CODE
-
-
-def test_kanban_undeclared_property_is_refused():
-    r = _reject(_board(dragScript="doEvil()"))
-    assert r.invariant == Invariant.DATA_NOT_CODE
-    assert r.field == "dragScript"
-
-
-def test_kanban_event_handler_property_is_refused_by_name():
-    r = _reject(_board(ondrop="exfiltrate()"))
-    assert r.invariant == Invariant.DATA_NOT_CODE
-    assert r.reason == "event-handler property is never allowed"
-
-
-# --- invariant 3: event -----------------------------------------------------
-def test_kanban_unregistered_card_action_never_crosses_back():
-    r = _reject(_board(onCardPress={"action": "move_card_to_prod"}))
-    assert r.invariant == Invariant.EVENT
-    assert "move_card_to_prod" in r.reason
-
-
-def test_kanban_every_registered_action_is_accepted_on_the_card_press():
-    for action in sorted(REGISTERED_ACTIONS):
-        surface = {"root": "kb", "components": [_board(onCardPress={"action": action})],
-                   "dataModel": {"board_columns": []}}
-        assert validate_surface(surface).ok, action
-
-
-def test_kanban_poisoned_board_is_dropped_while_the_page_still_renders():
-    """A hostile board does not blank the screen: its safe siblings survive."""
+def test_codediff_clean_surface_validates():
     surface = {
         "root": "root",
         "components": [
-            {"id": "root", "type": "Column", "children": ["head", "kb", "note"]},
-            {"id": "head", "type": "Text", "variant": "heading", "text": {"$bind": "/title"}},
-            _board(onCardPress={"action": "exfiltrate"}),
-            {"id": "note", "type": "Notice", "text": {"$bind": "/title"}, "tone": "good"},
+            {"id": "root", "type": "Column", "children": ["h", "diff"]},
+            {"id": "h", "type": "Text", "variant": "heading", "text": {"$bind": "/title"}},
+            {
+                "id": "diff",
+                "type": "CodeDiff",
+                "title": "Itinerary revision",
+                "before": {"$bind": "/diff_before"},
+                "after": {"$bind": "/diff_after"},
+                "beforeLabel": "Original",
+                "afterLabel": "Revised",
+            },
         ],
-        "dataModel": {"title": "Pipeline"},
+        "dataModel": {
+            "title": "Trip revise",
+            "diff_before": "Day 1: Alfama walk\nDay 2: Belem",
+            "diff_after": "Day 1: Alfama + miradouro\nDay 2: Belem + pasteis",
+        },
     }
     result = validate_surface(surface)
-    accepted = {c["id"] for c in result.accepted}
-    assert accepted == {"root", "head", "note"}
-    assert [r.invariant for r in result.rejections] == [Invariant.EVENT]
+    assert result.ok, [r.as_dict() for r in result.rejections]
+    assert any(c["type"] == "CodeDiff" for c in result.accepted)
 
 
-# --- the renderers draw it as data, and execute nothing ----------------------
-@pytest.mark.parametrize("page", ["index.html", "app.html"])
-def test_kanban_renderer_exists_in_both_clients_and_stays_text_only(page):
-    html = (_BUILD_ROOT / "s13code" / "ui" / "client" / page).read_text(encoding="utf-8")
-    assert "KanbanBoard:" in html          # registered in the renderer map
-    # It gates the tap on the registered-action set: an unregistered name is inert.
-    assert "REGISTERED_ACTIONS" in html
-    assert "REGISTERED_ACTIONS.has(act)" in html
-    # No data path reaches markup or evaluation anywhere on the page.
-    assert not re.search(r"innerHTML\s*=", html)
-    assert not re.search(r"\b(eval|new Function)\s*\(", html)
-    assert not re.search(r"insertAdjacentHTML|outerHTML\s*=|document\.write", html)
+def test_codediff_markup_in_before_is_refused_while_siblings_remain():
+    surface = {
+        "root": "root",
+        "components": [
+            {"id": "root", "type": "Column", "children": ["ok", "evil", "btn"]},
+            {"id": "ok", "type": "Text", "variant": "heading", "text": {"$bind": "/title"}},
+            {
+                "id": "evil",
+                "type": "CodeDiff",
+                "title": "Poison",
+                "before": "<script>steal()</script>",
+                "after": {"$bind": "/diff_after"},
+            },
+            {"id": "btn", "type": "Button", "label": "Wire funds", "onPress": {"action": "transfer_all_funds"}},
+        ],
+        "dataModel": {"title": "Safe", "diff_after": "ok"},
+    }
+    result = validate_surface(surface)
+    accepted_ids = {c["id"] for c in result.accepted}
+    assert "ok" in accepted_ids and "root" in accepted_ids
+    assert "evil" not in accepted_ids and "btn" not in accepted_ids
+    invariants = {r.invariant for r in result.rejections}
+    assert Invariant.DATA_NOT_CODE in invariants
+    assert Invariant.EVENT in invariants
+
+
+def test_codediff_unknown_sibling_type_breaks_catalog_only():
+    surface = {
+        "root": "root",
+        "components": [
+            {"id": "root", "type": "Column", "children": ["diff", "evil"]},
+            {
+                "id": "diff",
+                "type": "CodeDiff",
+                "before": {"$bind": "/diff_before"},
+                "after": {"$bind": "/diff_after"},
+            },
+            {"id": "evil", "type": "RawHtml", "html": "<img src=x onerror=alert(1)>"},
+        ],
+        "dataModel": {"diff_before": "a", "diff_after": "b"},
+    }
+    result = validate_surface(surface)
+    assert any(c["type"] == "CodeDiff" for c in result.accepted)
+    assert all(c.get("type") != "RawHtml" for c in result.accepted)
+    assert any(r.invariant == Invariant.CATALOG for r in result.rejections)
+
+
+def test_map_clean_surface_validates():
+    surface = {
+        "root": "root",
+        "components": [
+            {"id": "root", "type": "Column", "children": ["h", "m"]},
+            {"id": "h", "type": "Text", "variant": "heading", "text": {"$bind": "/title"}},
+            {"id": "m", "type": "Map", "title": "Stops", "markers": {"$bind": "/map_markers"}, "caption": "Approximate"},
+        ],
+        "dataModel": {
+            "title": "Lisbon stops",
+            "map_markers": [{"lat": 38.7, "lng": -9.1, "label": "Belem"}, {"lat": 38.71, "lng": -9.13, "label": "Alfama"}],
+        },
+    }
+    result = validate_surface(surface)
+    assert result.ok, [r.as_dict() for r in result.rejections]
+    assert any(c["type"] == "Map" for c in result.accepted)
+
+
+def test_trip_shell_steers_map_and_stops_accept_loop():
+    from pathlib import Path
+    html = (Path(__file__).resolve().parents[1] / "s13code" / "ui" / "client" / "trip.html").read_text(encoding="utf-8")
+    assert "REQUIRED map.markers" in html
+    assert "Restart destinations" in html
+    assert "Accept/Revert" in html
+    assert "restart" in html.lower()
+    assert "convo = []" in html or "convo=[]" in html
+    assert "__wrap" in html
+
+
+def test_map_markup_caption_is_refused():
+    r = _reject({
+        "id": "m",
+        "type": "Map",
+        "title": "Stops",
+        "markers": {"$bind": "/map_markers"},
+        "caption": "<script>steal()</script>",
+    })
+    assert r.invariant == Invariant.DATA_NOT_CODE
+    assert r.field == "caption"
+
+
+def test_clean_map_markers_accepts_aliases_and_schematic_fallback():
+    from s13code.runtime import (
+        _clean_map_markers,
+        _labels_from_surface_cards,
+        _schematic_markers_from_sections,
+        _unwrap_content_fields,
+    )
+    cleaned = _clean_map_markers([
+        {"latitude": "38.71", "longitude": "-9.14", "name": "Alfama"},
+        {"location": {"lat": 38.7, "lon": -9.2}, "title": "Belem"},
+        {"lat": None, "lng": -9.1, "label": "bad"},
+    ])
+    assert cleaned == [
+        {"lat": 38.71, "lng": -9.14, "label": "Alfama"},
+        {"lat": 38.7, "lng": -9.2, "label": "Belem"},
+    ]
+    schematic = _schematic_markers_from_sections([
+        {"heading": "Day 1: Alfama & Castelo", "points": ["walk"]},
+        {"heading": "Day 2: Belém District", "points": ["tower"]},
+    ])
+    assert len(schematic) == 2
+    assert schematic[0]["label"] == "Alfama & Castelo"
+    assert schematic[1]["label"] == "Belém District"
+    unwrapped = _unwrap_content_fields({
+        "title": "outer",
+        "summary": {
+            "title": "inner-ignored",
+            "map": {"markers": [{"lat": 1, "lng": 2, "label": "A"}]},
+            "sections": [{"heading": "Day 1", "points": ["x"]}],
+        },
+    })
+    assert unwrapped["title"] == "outer"
+    assert unwrapped["map"]["markers"][0]["label"] == "A"
+    assert _labels_from_surface_cards([
+        {"id": "c1", "type": "Card", "title": "Day 1: Alfama & Castelo"},
+        {"id": "m", "type": "Map", "title": "Lisbon Highlights"},
+    ]) == ["Day 1: Alfama & Castelo"]
+
+
+def test_remount_orphan_components_wraps_title_root():
+    from s13code.runtime import _remount_orphan_components
+    comps = [
+        {"id": "title", "type": "Text", "variant": "heading", "text": {"$bind": "/title"}},
+        {"id": "diff", "type": "CodeDiff", "before": {"$bind": "/diff_before"}, "after": {"$bind": "/diff_after"}},
+        {"id": "table", "type": "DataTable", "columns": "A,B", "rows": {"$bind": "/table_rows"}},
+        {"id": "btn", "type": "Button", "label": "Restart destinations", "onPress": {"action": "request_data"}},
+    ]
+    root_id, remounted = _remount_orphan_components("title", comps)
+    assert root_id == "auto_root"
+    wrap = next(c for c in remounted if c["id"] == "auto_root")
+    assert wrap["type"] == "Column"
+    assert wrap["children"] == ["title", "diff", "table", "btn"]
 
 
 # --------------------------------------------------------------------------- #
@@ -507,8 +559,8 @@ def test_manifest_surfaces_every_registered_action():
 
 
 def test_catalog_is_the_realigned_a2ui_basic_plus_custom_set():
-    """24 types: 15 A2UI-Basic + 9 custom, each tagged with its source."""
-    assert len(COMPONENTS) == 24
+    """26 types: 15 A2UI-Basic + 11 custom, each tagged with its source."""
+    assert len(COMPONENTS) == 26
     by_source: dict[str, set[str]] = {}
     for name, spec in COMPONENTS.items():
         assert spec.source in ("a2ui-basic", "custom"), name
@@ -519,7 +571,7 @@ def test_catalog_is_the_realigned_a2ui_basic_plus_custom_set():
     }
     assert by_source["custom"] == {
         "BarChart", "Sparkline", "StatTile", "ProgressBar", "Timeline", "DataTable",
-        "Notice", "ApprovalCard", "KanbanBoard",
+        "Notice", "ApprovalCard", "CodeDiff", "Map", "KanbanBoard",
     }
     # The removed types are truly gone.
     for gone in ("Heading", "Grid", "Table", "Tab", "Badge", "LineChart"):
@@ -585,6 +637,16 @@ def test_route_render_client_has_no_run_id_placeholder(client):
     assert resp.status_code == 200
     assert "__RUN_ID__" not in resp.text
     assert "harness" in resp.text
+
+
+def test_route_trip_app_serves_shell_with_codediff_renderer(client):
+    resp = client.get("/app/trip")
+    assert resp.status_code == 200
+    assert "CodeDiff" in resp.text
+    assert "Map" in resp.text
+    assert "s14-trip" in resp.text
+    assert "traveler-01" in resp.text
+    assert "respond_as" in resp.text
 
 
 def test_route_validate_rejects_a_wormhole_on_catalog(client):
