@@ -222,7 +222,7 @@ async def composed(run_id: str, request: Request):
 async def client(run_id: str):
     if not _CLIENT.exists():
         raise HTTPException(500, "render client missing")
-    return _CLIENT.read_text().replace("__RUN_ID__", run_id)
+    return _CLIENT.read_text(encoding="utf-8").replace("__RUN_ID__", run_id)
 
 
 @router.get("/app", response_class=HTMLResponse)
@@ -233,4 +233,17 @@ async def app_viewer():
     path = Path(__file__).parent / "client" / "app.html"
     if not path.exists():
         raise HTTPException(500, "app viewer missing")
-    return path.read_text()
+    return path.read_text(encoding="utf-8")
+
+
+@router.get("/jobhunt", response_class=HTMLResponse)
+@router.get("/jobhunt/", response_class=HTMLResponse)
+async def jobhunt_app():
+    """Career Pipeline: a UI-only application that answers every turn as a
+    composed, catalog-validated interface and never as a paragraph of text. It
+    shows the validator's refusals inline, so a hostile turn is visible rather
+    than silent."""
+    path = Path(__file__).parent / "client" / "jobhunt.html"
+    if not path.exists():
+        raise HTTPException(500, "jobhunt app missing")
+    return path.read_text(encoding="utf-8")

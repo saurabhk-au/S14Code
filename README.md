@@ -116,6 +116,8 @@ All served by the runtime on 8113, defined in
 | `POST /v1/validate` | run any surface through the injection wall |
 | `POST /v1/action` | a validated user action (approve/reject), bound to final params |
 | `GET /s/{id}` | the render client, pointed at a run |
+| `GET /app` | the bare-minimal UI-only app shell |
+| `GET /jobhunt` | **Career Pipeline**, the UI-only application (see below) |
 
 ## The generative loop (UI composed by the harness)
 
@@ -136,6 +138,69 @@ S14_SELFCORRECT_CITY=Berlin GLC_BASE_URL=http://127.0.0.1:8111 \
   uv run python proofs/harness_selfcorrect.py  # -> proofs/harness_selfcorrect.json
 ```
 
+## The `KanbanBoard` component
+
+The catalog carries **24** component types: 15 A2UI Basic + 9 custom extensions.
+The ninth custom type is `KanbanBoard`
+([`s13code/ui/catalog.py`](s13code/ui/catalog.py)) — lanes of cards, for anything
+that sits in a named stage and moves between stages.
+
+```python
+"KanbanBoard": ComponentSpec("KanbanBoard", {
+    "title":       PropSpec("text"),      # a literal lane-board caption
+    "columns":     PropSpec("binding"),   # -> [{"title", "cards":[{"title","meta","tone"}]}]
+    "onCardPress": PropSpec("action"),    # a REGISTERED action, or the card is inert
+    "wipLimit":    PropSpec("number"),    # colours a lane header; executes nothing
+}, source="custom"),
+```
+
+The renderers in [`client/index.html`](s13code/ui/client/index.html),
+[`client/app.html`](s13code/ui/client/app.html) and
+[`client/jobhunt.html`](s13code/ui/client/jobhunt.html) draw every lane title,
+card title and card meta with `createTextNode`, so a card titled
+`<img src=x onerror=...>` renders those literal characters. A card becomes
+tappable **only** when `onCardPress` names an action the catalog registered, so
+the event invariant holds at render time as well as at validation time.
+
+Nothing in the compose prompt names `KanbanBoard`. The content role may emit a
+generic `board` field, `compose_surface` exposes it as one pointer
+(`/board_columns`), and the model picks the component out of the catalog on its
+own.
+
+## Career Pipeline — the UI-only application
+
+A job-hunt tracker that answers **only** by composing an interface, served at
+`/jobhunt`. Every turn is a composed, catalog-validated surface; a tap on a card
+is what earns the next turn.
+
+| Turn | What the user does | What the agent composes |
+|---|---|---|
+| 1 | asks about the job hunt | `KanbanBoard` of applications by stage, `StatTile` totals |
+| 2 | **taps a company card** | that application's detail: `StatTile` row + `Card`/`List` history |
+| 3 | asks to compare offers | `DataTable` of compensation across options |
+
+The shell holds no templates and no domain logic. It shows the validator's own
+refusals inline, so a hostile turn is visible rather than silent.
+
+### Hosting it
+
+[`modal_app.py`](modal_app.py) deploys the application as **one container with
+two processes**: the gateway on `127.0.0.1:8111`, never published, and S14Code
+as the public ASGI app. The provider key comes from a Modal Secret, is handed to
+the gateway subprocess, and is then deleted from the app process's environment —
+so the UI layer holds no credential at runtime, exactly as it does locally. The
+container has no Ollama, so the runtime uses the offline `DeterministicEmbedder`
+via `S13_EMBEDDER=deterministic`; that changes memory recall quality only, and
+every model completion still goes through the gateway to Gemini.
+
+```bash
+modal secret create s14-gemini GEMINI_API_KEY=<your key>
+GLC_PACKAGE_DIR=/path/to/glc_v3/glc modal deploy modal_app.py
+```
+
+The gateway package is a separate project and is deliberately **not** vendored
+into this repository; point `GLC_PACKAGE_DIR` at your checkout.
+
 ## Proofs and tests
 
 Everything the Session 14 widgets replay is real captured output under `proofs/`:
@@ -147,6 +212,30 @@ Everything the Session 14 widgets replay is real captured output under `proofs/`
 | `harness_selfcorrect.json` | `harness_selfcorrect.py` | the planner catches weak Berlin evidence and re-researches |
 | `generated_surface.json` | `generate_live.py` | a local model's output caught by the validator |
 | `gemini_surface.json` | `generate_gemini.py` | Gemini's raw output via the gateway |
+| `jobhunt_conversation.json` | `jobhunt_conversation.py` | 3 turns of Career Pipeline, 3 different interfaces |
+| `adversarial_jobhunt.json` | `adversarial_jobhunt.py` | the hostile prompt, and the wall refusing it |
+| `browser_demo.json` + `screens/` | `browser_demo.py` | the app driven in a real browser, screenshot per turn |
+
+Reproduce the Session 14 application proofs from a fresh checkout (gateway on
+8111 with `provider=gemini`, runtime on 8113):
+
+```bash
+uv sync
+GLC_BASE_URL=http://127.0.0.1:8111 S13_GATEWAY_PROVIDER=gemini \
+  S14_SURFACE_MAX_TOKENS=12000 uv run s14code serve &
+
+export S14_BASE=http://127.0.0.1:8113
+uv run python proofs/jobhunt_conversation.py    # 3 turns, 3 interfaces
+uv run python proofs/adversarial_jobhunt.py     # the injection wall under attack
+
+# the browser demo needs one extra dependency and a headless Chromium
+uv sync --group demo && uv run playwright install chromium
+uv run python proofs/browser_demo.py            # -> proofs/screens/*.png
+```
+
+`S14_SURFACE_MAX_TOKENS` matters: at the 4000 default, Gemini 2.5 Flash
+occasionally stops mid-JSON and the turn composes nothing. 12000 removed the
+failure in repeated runs.
 
 ```bash
 uv run python proofs/run_surface_proof.py    # writes proof.json, prints the table

@@ -369,6 +369,123 @@ def test_safe_siblings_survive_a_partially_poisoned_surface():
 
 
 # --------------------------------------------------------------------------- #
+# KanbanBoard — the contributed component, held to the same three invariants
+# --------------------------------------------------------------------------- #
+
+def _board(**over) -> dict:
+    """A well-formed KanbanBoard, overridable field by field."""
+    comp = {"id": "kb", "type": "KanbanBoard", "title": "Pipeline",
+            "columns": {"$bind": "/board_columns"},
+            "onCardPress": {"action": "request_data"}, "wipLimit": 5}
+    comp.update(over)
+    return comp
+
+
+def test_kanban_is_in_the_catalog_as_a_custom_extension():
+    assert "KanbanBoard" in COMPONENTS
+    assert COMPONENTS["KanbanBoard"].source == "custom"
+    kinds = {name: spec.kind for name, spec in COMPONENTS["KanbanBoard"].props.items()}
+    assert kinds == {"title": "text", "columns": "binding",
+                     "onCardPress": "action", "wipLimit": "number"}
+
+
+def test_kanban_well_formed_board_validates_clean():
+    surface = {"root": "kb", "components": [_board()],
+               "dataModel": {"board_columns": [{"title": "Applied", "cards": [{"title": "Acme"}]}]}}
+    assert validate_surface(surface).ok
+
+
+# --- invariant 1: catalog ---------------------------------------------------
+def test_kanban_a_near_miss_type_name_is_still_unknown():
+    """The catalog is closed: 'Kanban' and 'KanbanColumn' are not KanbanBoard."""
+    for bogus in ("Kanban", "KanbanColumn", "KanbanBoardV2"):
+        assert _reject({"id": "x", "type": bogus}).invariant == Invariant.CATALOG
+
+
+# --- invariant 2: data-not-code ---------------------------------------------
+def test_kanban_title_carrying_markup_is_refused():
+    r = _reject(_board(title="<script>fetch('/steal')</script>"))
+    assert r.invariant == Invariant.DATA_NOT_CODE
+    assert r.field == "title" and r.reason == "value carries markup"
+
+
+def test_kanban_inline_markup_where_a_binding_belongs_is_refused():
+    """columns is a binding; markup smuggled in as a literal never renders."""
+    r = _reject(_board(columns="<img src=x onerror=alert(1)>"))
+    assert r.invariant == Invariant.DATA_NOT_CODE
+    assert r.field == "columns"
+
+
+def test_kanban_binding_must_be_a_bind_pointer():
+    r = _reject(_board(columns=[{"title": "Applied", "cards": []}]))
+    assert r.invariant == Invariant.DATA_NOT_CODE
+    assert "must be {'$bind': '/pointer'}" in r.reason
+
+
+def test_kanban_javascript_url_in_a_prop_is_refused():
+    r = _reject(_board(title="javascript:steal()"))
+    assert r.invariant == Invariant.DATA_NOT_CODE
+
+
+def test_kanban_undeclared_property_is_refused():
+    r = _reject(_board(dragScript="doEvil()"))
+    assert r.invariant == Invariant.DATA_NOT_CODE
+    assert r.field == "dragScript"
+
+
+def test_kanban_event_handler_property_is_refused_by_name():
+    r = _reject(_board(ondrop="exfiltrate()"))
+    assert r.invariant == Invariant.DATA_NOT_CODE
+    assert r.reason == "event-handler property is never allowed"
+
+
+# --- invariant 3: event -----------------------------------------------------
+def test_kanban_unregistered_card_action_never_crosses_back():
+    r = _reject(_board(onCardPress={"action": "move_card_to_prod"}))
+    assert r.invariant == Invariant.EVENT
+    assert "move_card_to_prod" in r.reason
+
+
+def test_kanban_every_registered_action_is_accepted_on_the_card_press():
+    for action in sorted(REGISTERED_ACTIONS):
+        surface = {"root": "kb", "components": [_board(onCardPress={"action": action})],
+                   "dataModel": {"board_columns": []}}
+        assert validate_surface(surface).ok, action
+
+
+def test_kanban_poisoned_board_is_dropped_while_the_page_still_renders():
+    """A hostile board does not blank the screen: its safe siblings survive."""
+    surface = {
+        "root": "root",
+        "components": [
+            {"id": "root", "type": "Column", "children": ["head", "kb", "note"]},
+            {"id": "head", "type": "Text", "variant": "heading", "text": {"$bind": "/title"}},
+            _board(onCardPress={"action": "exfiltrate"}),
+            {"id": "note", "type": "Notice", "text": {"$bind": "/title"}, "tone": "good"},
+        ],
+        "dataModel": {"title": "Pipeline"},
+    }
+    result = validate_surface(surface)
+    accepted = {c["id"] for c in result.accepted}
+    assert accepted == {"root", "head", "note"}
+    assert [r.invariant for r in result.rejections] == [Invariant.EVENT]
+
+
+# --- the renderers draw it as data, and execute nothing ----------------------
+@pytest.mark.parametrize("page", ["index.html", "app.html"])
+def test_kanban_renderer_exists_in_both_clients_and_stays_text_only(page):
+    html = (_BUILD_ROOT / "s13code" / "ui" / "client" / page).read_text(encoding="utf-8")
+    assert "KanbanBoard:" in html          # registered in the renderer map
+    # It gates the tap on the registered-action set: an unregistered name is inert.
+    assert "REGISTERED_ACTIONS" in html
+    assert "REGISTERED_ACTIONS.has(act)" in html
+    # No data path reaches markup or evaluation anywhere on the page.
+    assert not re.search(r"innerHTML\s*=", html)
+    assert not re.search(r"\b(eval|new Function)\s*\(", html)
+    assert not re.search(r"insertAdjacentHTML|outerHTML\s*=|document\.write", html)
+
+
+# --------------------------------------------------------------------------- #
 # catalog.py — catalog_manifest
 # --------------------------------------------------------------------------- #
 
@@ -390,8 +507,8 @@ def test_manifest_surfaces_every_registered_action():
 
 
 def test_catalog_is_the_realigned_a2ui_basic_plus_custom_set():
-    """23 types: 15 A2UI-Basic + 8 custom, each tagged with its source."""
-    assert len(COMPONENTS) == 23
+    """24 types: 15 A2UI-Basic + 9 custom, each tagged with its source."""
+    assert len(COMPONENTS) == 24
     by_source: dict[str, set[str]] = {}
     for name, spec in COMPONENTS.items():
         assert spec.source in ("a2ui-basic", "custom"), name
@@ -402,7 +519,7 @@ def test_catalog_is_the_realigned_a2ui_basic_plus_custom_set():
     }
     assert by_source["custom"] == {
         "BarChart", "Sparkline", "StatTile", "ProgressBar", "Timeline", "DataTable",
-        "Notice", "ApprovalCard",
+        "Notice", "ApprovalCard", "KanbanBoard",
     }
     # The removed types are truly gone.
     for gone in ("Heading", "Grid", "Table", "Tab", "Badge", "LineChart"):

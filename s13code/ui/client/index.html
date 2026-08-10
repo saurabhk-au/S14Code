@@ -40,6 +40,20 @@
   .StatTile .dl{font-size:11px;color:var(--ink-muted);margin-top:4px}
   .StatTile.good{border-top:3px solid var(--green)}.StatTile.warn{border-top:3px solid var(--amber)}.StatTile.neutral{border-top:3px solid var(--accent)}
   .chart{background:var(--surface);border:1px solid var(--rule);border-radius:12px;padding:14px}
+  .kb{background:var(--surface);border:1px solid var(--rule);border-radius:12px;padding:14px;overflow-x:auto}
+  .kb .kbt{font-size:12px;font-weight:600;color:var(--ink-muted);margin-bottom:10px;font-family:var(--font-mono)}
+  .kb .lanes{display:flex;gap:12px;align-items:flex-start;min-width:min-content}
+  .kb .lane{flex:1 0 190px;min-width:190px;background:var(--surface-alt,#FAFAFA);border:1px solid var(--rule);border-radius:10px;padding:10px}
+  .kb .lh{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+  .kb .ln{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--ink)}
+  .kb .lc{margin-left:auto;font-family:var(--font-mono);font-size:11px;color:var(--ink-muted);background:var(--surface);border:1px solid var(--rule);border-radius:999px;padding:1px 7px}
+  .kb .lc.over{color:var(--red-ink,#B91C1C);border-color:var(--red,#DC2626)}
+  .kb .card{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:8px;padding:8px 10px;margin-bottom:7px;font-size:13px}
+  .kb .card.good{border-left-color:var(--green,#16A34A)}.kb .card.warn{border-left-color:var(--amber,#D97706)}.kb .card.bad{border-left-color:var(--red,#DC2626)}
+  .kb .card .ct{font-weight:600;color:var(--ink);line-height:1.35}
+  .kb .card .cm{font-size:11px;color:var(--ink-muted);margin-top:3px;font-family:var(--font-mono)}
+  .kb button.card{display:block;width:100%;text-align:left;cursor:pointer;font-family:inherit}
+  .kb .empty{font-size:11px;color:var(--ink-muted);font-style:italic;padding:4px 2px}
   .chart .ct{font-size:12px;font-weight:600;color:var(--ink-muted);margin-bottom:8px;font-family:var(--font-mono)}
   table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--rule);border-radius:12px;overflow:hidden}
   th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--rule);font-size:13px}
@@ -78,6 +92,10 @@
 // innerHTML from a bound value and NEVER evaluates any string. A component is
 // data; a widget draws it. Unknown types are skipped, not executed.
 const RUN = "__RUN_ID__";
+// Mirrors catalog.REGISTERED_ACTIONS. The client refuses to wire a tap to any
+// name outside this set, so an unregistered action cannot cross back even if a
+// component somehow reached the renderer carrying one.
+const REGISTERED_ACTIONS = new Set(["approve","reject","rerun","request_data"]);
 const $ = (t, cls) => { const e = document.createElement(t); if (cls) e.className = cls; return e; };
 const text = (t) => document.createTextNode(t == null ? "" : String(t));
 
@@ -126,8 +144,10 @@ const RENDERERS = {
     const l=$("div","lab");l.append(text(c.label));const v=$("div","val");v.append(text(resolve(c.value,ctx.dm)+(c.unit||"")));
     const d=$("div","dl");d.append(text(resolve(c.delta,ctx.dm)||""));e.append(l,v,d);return e;},
   ProgressBar:(c,ctx)=>{const e=$("div","chart");const t=$("div","ct");t.append(text("progress"));
-    const p=$("div","prog");const i=$("i");const val=+resolve(c.value,ctx.dm)||0;i.style.width=Math.min(100,val/(c.max||100)*100)+"%";
-    p.append(i);e.append(t,p);const cap=$("div");cap.style.cssText="font-size:11px;color:var(--ink-muted);margin-top:6px;font-family:var(--font-mono)";cap.append(text(val+" / "+(c.max||100)));e.append(cap);return e;},
+    const p=$("div","prog");const i=$("i");const val=+resolve(c.value,ctx.dm)||0;
+    // max is a "number" prop, but a model often binds it; resolve it either way.
+    const max=+resolve(c.max,ctx.dm)||100;i.style.width=Math.min(100,val/max*100)+"%";
+    p.append(i);e.append(t,p);const cap=$("div");cap.style.cssText="font-size:11px;color:var(--ink-muted);margin-top:6px;font-family:var(--font-mono)";cap.append(text(val+" / "+max));e.append(cap);return e;},
   Sparkline:(c,ctx)=>{const e=$("div","chart");const t=$("div","ct");t.append(text("trend"));e.append(t);
     const d=resolve(c.data,ctx.dm)||[];e.append(sparkSvg(d,c.tone));return e;},
   BarChart:(c,ctx)=>{const e=$("div","chart");const t=$("div","ct");t.append(text(c.title||"bar chart"));e.append(t);
@@ -135,6 +155,7 @@ const RENDERERS = {
   DataTable:(c,ctx)=>renderTable(c,ctx),
   Timeline:(c,ctx)=>renderTimeline(c,ctx),
   ApprovalCard:(c,ctx)=>renderApproval(c,ctx),
+  KanbanBoard:(c,ctx)=>renderKanban(c,ctx),
 };
 
 function field(c,mk){const wrap=$("label","field");if(c.label){const l=$("span","lb");l.append(text(c.label));wrap.append(l);}wrap.append(mk());return wrap;}
@@ -185,6 +206,39 @@ function renderApproval(c,ctx){const e=$("div","Approval");const sm=$("div","sm"
   const pre=$("pre");pre.append(text(JSON.stringify(resolve(c.params,ctx.dm),null,2)));const btns=$("div","btns");
   const ok=$("button","ok");ok.append(text("Approve"));ok.onclick=()=>emitAction("approve",resolve(c.params,ctx.dm));
   const no=$("button");no.append(text("Reject"));no.onclick=()=>emitAction("reject",{});btns.append(ok,no);e.append(sm,pre,btns);return e;}
+
+// KanbanBoard: lanes of cards. Every lane title, card title and card meta is
+// drawn with createTextNode, so a card whose title is "<img onerror=...>" is
+// shown as those literal characters and never parsed. The card is only made
+// tappable when onCardPress names an action the catalog registered; an
+// unregistered name leaves an inert card, so the event invariant holds at
+// render time too, not just at validation time.
+function renderKanban(c,ctx){
+  const e=$("div","kb");const t=$("div","kbt");t.append(text(c.title||"board"));e.append(t);
+  const lanes=$("div","lanes");
+  const wipRaw=resolve(c.wipLimit,ctx.dm);const wip=(wipRaw==null||wipRaw==="")?null:(+wipRaw||null);
+  const act=c.onCardPress&&c.onCardPress.action;
+  const tappable=REGISTERED_ACTIONS.has(act);
+  (resolve(c.columns,ctx.dm)||[]).forEach(col=>{
+    const lane=$("div","lane");const head=$("div","lh");
+    const nm=$("div","ln");nm.append(text(col&&col.title!=null?col.title:""));
+    const cards=(col&&col.cards)||[];
+    const ct=$("span","lc"+((wip!=null&&cards.length>wip)?" over":""));
+    ct.append(text(wip!=null?(cards.length+"/"+wip):String(cards.length)));
+    head.append(nm,ct);lane.append(head);
+    if(!cards.length){const em=$("div","empty");em.append(text("empty"));lane.append(em);}
+    cards.forEach(card=>{
+      const tone=({good:"good",warn:"warn",bad:"bad"})[card&&card.tone]||"";
+      const box=$(tappable?"button":"div","card "+tone);
+      const ti=$("div","ct");ti.append(text(card&&card.title!=null?card.title:""));box.append(ti);
+      if(card&&card.meta!=null&&String(card.meta)!==""){const mt=$("div","cm");mt.append(text(card.meta));box.append(mt);}
+      if(tappable){box.type="button";box.onclick=()=>emitAction(act,{card:card&&card.title,lane:col&&col.title});}
+      lane.append(box);
+    });
+    lanes.append(lane);
+  });
+  e.append(lanes);return e;
+}
 
 function emitAction(name,args){ // the only way the surface changes the world: a named, validated event
   document.getElementById("meta").textContent = "action emitted → "+name+" "+JSON.stringify(args);

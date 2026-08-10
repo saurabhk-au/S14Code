@@ -54,6 +54,21 @@
   .tabs button{border:1px solid var(--rule-strong);background:var(--surface);border-radius:999px;padding:5px 13px;font-size:13px;font-weight:600;cursor:pointer;font-family:var(--font-mono);color:var(--ink-muted)}
   .tabs button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
   .Notice{border-left:4px solid var(--amber);background:var(--amber-soft);border-radius:10px;padding:12px 14px}
+  .kb{background:var(--surface);border:1px solid var(--rule);border-radius:12px;padding:14px;overflow-x:auto}
+  .kb .kbt{font-size:12px;font-weight:600;color:var(--ink-muted);margin-bottom:10px;font-family:var(--font-mono)}
+  .kb .lanes{display:flex;gap:12px;align-items:flex-start;min-width:min-content}
+  .kb .lane{flex:1 0 190px;min-width:190px;background:var(--surface-alt);border:1px solid var(--rule);border-radius:10px;padding:10px}
+  .kb .lh{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+  .kb .ln{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--ink)}
+  .kb .lc{margin-left:auto;font-family:var(--font-mono);font-size:11px;color:var(--ink-muted);background:var(--surface);border:1px solid var(--rule);border-radius:999px;padding:1px 7px}
+  .kb .lc.over{color:var(--red-ink);border-color:var(--red)}
+  .kb .card{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:8px;padding:8px 10px;margin-bottom:7px;font-size:13px;transition:all 120ms}
+  .kb .card.good{border-left-color:var(--green)}.kb .card.warn{border-left-color:var(--amber)}.kb .card.bad{border-left-color:var(--red)}
+  .kb .card .ct{font-weight:600;color:var(--ink);line-height:1.35}
+  .kb .card .cm{font-size:11px;color:var(--ink-muted);margin-top:3px;font-family:var(--font-mono)}
+  .kb button.card{display:block;width:100%;text-align:left;cursor:pointer;font-family:inherit}
+  .kb button.card:hover{border-color:var(--accent);background:var(--accent-soft)}
+  .kb .empty{font-size:11px;color:var(--ink-muted);font-style:italic;padding:4px 2px}
   .actbtn{width:100%;text-align:center;border:1px solid var(--rule-strong);background:var(--surface);border-radius:12px;padding:14px;font-weight:600;font-size:15px;cursor:pointer;color:var(--ink);transition:all 120ms}
   .actbtn:hover{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
   .actbtn:active{transform:translateY(1px)}
@@ -83,6 +98,8 @@
 // interface changes the world. ----
 const API = "";                     // same origin as the runtime (8113)
 let convo = [];                     // the running conversation (context for each turn)
+// Mirrors catalog.REGISTERED_ACTIONS: the client wires a tap only to these.
+const REGISTERED_ACTIONS = new Set(["approve","reject","rerun","request_data"]);
 const $ = (t,c)=>{const e=document.createElement(t);if(c)e.className=c;return e;};
 const T = t=>document.createTextNode(t==null?"":String(t));
 const resolve=(v,dm)=>(v&&typeof v==="object"&&"$bind"in v)?ptr(dm,v["$bind"]):v;
@@ -123,7 +140,7 @@ const R={
   Notice:(c,x)=>{const e=$("div","Notice");e.append(T(resolve(c.text,x.dm)));return e;},
   StatTile:(c,x)=>{const e=$("div","StatTile");const l=$("div","lab");l.append(T(c.label));const v=$("div","val");v.append(T(String(resolve(c.value,x.dm))+(c.unit?" "+c.unit:"")));const d=$("div","dl");d.append(T(resolve(c.delta,x.dm)||""));e.append(l,v,d);return e;},
   Timeline:(c,x)=>{const e=$("div","chart");const t=$("div","ct");t.append(T(c.title||"timeline"));const b=$("div");b.style.cssText="display:flex;flex-direction:column;gap:8px;margin-top:4px";(resolve(c.events,x.dm)||[]).forEach(ev=>{const r=$("div");r.style.cssText="display:flex;gap:10px;align-items:flex-start;font-size:14px";const dot=$("span");dot.textContent="●";dot.style.cssText="color:var(--accent);font-size:10px;margin-top:5px";const lab=$("div");lab.style.flex="1";mdInline(String(ev.label!=null?ev.label:(ev.kind!=null?ev.kind:JSON.stringify(ev))),lab);r.append(dot,lab);b.append(r);});e.append(t,b);return e;},
-  ProgressBar:(c,x)=>{const e=$("div","chart");const t=$("div","ct");t.append(T("progress"));const p=$("div","prog");const i=$("i");const val=+resolve(c.value,x.dm)||0;i.style.width=Math.min(100,val/(c.max||100)*100)+"%";p.append(i);e.append(t,p);return e;},
+  ProgressBar:(c,x)=>{const e=$("div","chart");const t=$("div","ct");t.append(T("progress"));const p=$("div","prog");const i=$("i");const val=+resolve(c.value,x.dm)||0;const max=+resolve(c.max,x.dm)||100;i.style.width=Math.min(100,val/max*100)+"%";p.append(i);e.append(t,p);return e;},
   Sparkline:(c,x)=>{const e=$("div","chart");const t=$("div","ct");t.append(T("trend"));e.append(t,spark(resolve(c.data,x.dm)||[]));return e;},
   BarChart:(c,x)=>{const e=$("div","chart");const t=$("div","ct");t.append(T(c.title||"chart"));e.append(t,bars(resolve(c.data,x.dm)||[],c.xKey,c.yKey));return e;},
   DataTable:(c,x)=>table(c,x),
@@ -137,6 +154,35 @@ const R={
   DateTime:(c,x)=>{const i=$("input","field");i.type="date";return i;},
   Modal:(c,x)=>{const e=$("div","Card");if(c.title){const h=$("div","ct");h.append(T(c.title));e.append(h);}kids(c,x,e);return e;},
   ApprovalCard:(c,x)=>{const e=$("div","Card");const s=$("div","ct");s.append(T(resolve(c.summary,x.dm)||"Approve?"));const pre=document.createElement("pre");pre.style.cssText="font-size:12px;background:var(--surface-alt);padding:8px;border-radius:8px;overflow:auto";pre.append(T(JSON.stringify(resolve(c.params,x.dm),null,2)));const ok=$("button","actbtn");ok.append(T("Approve"));ok.onclick=()=>choose("approve");e.append(s,pre,ok);return e;},
+  // KanbanBoard: lanes of cards, every string drawn as a text node. A card is
+  // tappable only when onCardPress names a REGISTERED action; tapping feeds the
+  // card title back as the next turn, so the board is a real conversational move.
+  KanbanBoard:(c,x)=>{
+    const e=$("div","kb");const t=$("div","kbt");t.append(T(c.title||"board"));e.append(t);
+    const lanes=$("div","lanes");
+    const wipRaw=resolve(c.wipLimit,x.dm);const wip=(wipRaw==null||wipRaw==="")?null:(+wipRaw||null);
+    const act=c.onCardPress&&c.onCardPress.action;
+    const tappable=REGISTERED_ACTIONS.has(act);
+    (resolve(c.columns,x.dm)||[]).forEach(col=>{
+      const lane=$("div","lane");const head=$("div","lh");
+      const nm=$("div","ln");nm.append(T(col&&col.title!=null?col.title:""));
+      const cards=(col&&col.cards)||[];
+      const ct=$("span","lc"+((wip!=null&&cards.length>wip)?" over":""));
+      ct.append(T(wip!=null?(cards.length+"/"+wip):String(cards.length)));
+      head.append(nm,ct);lane.append(head);
+      if(!cards.length){const em=$("div","empty");em.append(T("empty"));lane.append(em);}
+      cards.forEach(card=>{
+        const tone=({good:"good",warn:"warn",bad:"bad"})[card&&card.tone]||"";
+        const box=$(tappable?"button":"div","card "+tone);
+        const ti=$("div","ct");ti.append(T(card&&card.title!=null?card.title:""));box.append(ti);
+        if(card&&card.meta!=null&&String(card.meta)!==""){const mt=$("div","cm");mt.append(T(card.meta));box.append(mt);}
+        if(tappable){box.type="button";box.onclick=()=>choose(String(card&&card.title!=null?card.title:""));}
+        lane.append(box);
+      });
+      lanes.append(lane);
+    });
+    e.append(lanes);return e;
+  },
 };
 function kids(c,x,e){for(const id of (c.children||[])){const ch=x.byId[id];if(ch)e.append(node(ch,x));}}
 function node(c,x){const f=R[c.type];if(!f){const s=$("div");s.style.cssText="color:var(--red-ink);font-family:var(--font-mono);font-size:11px";s.append(T("[skipped "+c.type+"]"));return s;}return f(c,x);}
@@ -150,13 +196,20 @@ function tabs(c,x){const wrap=$("div");const nav=$("div","tabs");const body=$("d
 function render(surface){const byId={};surface.components.forEach(c=>byId[c.id]=c);const x={byId,dm:surface.dataModel||{}};const m=document.getElementById("mount");m.textContent="";m.append(node(byId[surface.root],x));}
 
 // ---- the app loop: a tap becomes the next turn ----
-function setStatus(html){document.getElementById("status").innerHTML=html;}
+// The status line is built as DOM, never as markup. It echoes the user's own
+// prompt and the provider name the gateway reported; both are untrusted strings,
+// so both are appended as text nodes. Nothing on this page assigns innerHTML.
+function setStatus(pillClass,pillText,restText){
+  const s=document.getElementById("status");s.textContent="";
+  if(pillText){const p=$("span","pill "+(pillClass||""));p.append(T(pillText));s.append(p);}
+  if(restText)s.append(T(restText));
+}
 function crumbs(){document.getElementById("crumbs").textContent = convo.length? "conversation: "+convo.join("  ›  ") : "";}
 
 async function runTurn(userText){
   convo.push(userText);
   crumbs();
-  setStatus('<span class="pill think">composing…</span> the agent is writing an interface for: "'+userText+'"');
+  setStatus("think","composing…",' the agent is writing an interface for: "'+userText+'"');
   const goal = convo.length===1 ? convo[0]
      : convo[0] + "\nSo far the user then picked: " + convo.slice(1).join(", then ") + ".\nRespond with the next interface for that.";
   const res = await fetch(API+"/v1/agent/runs",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -165,8 +218,8 @@ async function runTurn(userText){
   const rid = run.run_id;
   const c = await (await fetch(API+"/v1/runs/"+rid+"/composed")).json();
   if(c.surface){ render(c.surface);
-    setStatus('<span class="pill good">'+(c.provider||"gemini")+' · '+c.component_count+' components · 0 executable</span> composed live, validated in-catalog'); }
-  else { setStatus("no interface composed"); }
+    setStatus("good",(c.provider||"gemini")+" · "+c.component_count+" components · 0 executable"," composed live, validated in-catalog"); }
+  else { setStatus("","","no interface composed"); }
 }
 function choose(label){ if(label) runTurn(label); }
 
